@@ -50,7 +50,10 @@ const allowedOrigins = [
 app.use((req, res, next) => {
   const origin = req.headers.origin;
 
-  if (allowedOrigins.includes(origin)) {
+  if (
+    allowedOrigins.includes(origin) ||
+    (origin && origin.endsWith(".pods-frontend.pages.dev"))
+  ) {
     res.setHeader("Access-Control-Allow-Origin", origin);
   }
 
