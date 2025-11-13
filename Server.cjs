@@ -43,7 +43,8 @@ const allowedOrigins = [
   "https://mshaikh03.github.io",        
   "https://podstudio.ca",            
   "http://localhost:5173",            
-  "http://127.0.0.1:5173"              
+  "http://127.0.0.1:5173"
+  "https://pods-frontend.pages.dev"              
 ];
 
 app.use((req, res, next) => {
