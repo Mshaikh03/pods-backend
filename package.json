@@ -2,11 +2,11 @@
   "name": "pods-backend",
   "version": "1.0.0",
   "description": "Backend API for Pods podcast platform",
-  "main": "server.cjs",
+  "main": "Server.cjs",
   "type": "commonjs",
   "scripts": {
-    "start": "node server.cjs",
-    "dev": "nodemon server.cjs"
+    "start": "node Server.cjs",
+    "dev": "nodemon Server.cjs"
   },
   "keywords": [],
   "author": "",
