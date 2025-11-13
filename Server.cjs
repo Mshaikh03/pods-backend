@@ -39,18 +39,33 @@ app.use(compression());
 app.use(express.json({ limit: "10mb" }));
 
 // CORS
+const allowedOrigins = [
+  "https://mshaikh03.github.io",        
+  "https://podstudio.ca",            
+  "http://localhost:5173",            
+  "http://127.0.0.1:5173"              
+];
+
 app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", req.headers.origin || "*");
+  const origin = req.headers.origin;
+
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
+
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
     "Content-Type,Authorization,Range"
   );
   res.setHeader("Access-Control-Allow-Credentials", "true");
-  if (req.method === "OPTIONS") return res.sendStatus(204);
+
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+
   next();
 });
-
 //  CACHE + AUTH HELPERS
 
 const cache = new NodeCache({ stdTTL: 90, checkperiod: 120 });
@@ -225,6 +240,6 @@ app.use((req, res) => {
   res.status(404).json({ error: "Route not found", path: req.path });
 });
 
-app.listen(PORT, "127.0.0.1", () =>
-  console.log(`✅ Server running at http://127.0.0.1:${PORT}`)
-);
+app.listen(PORT, () => {
+  console.log(`✅ Server running on port ${PORT}`);
+});
