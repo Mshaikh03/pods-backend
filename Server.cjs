@@ -232,7 +232,7 @@ app.get("/episodes", async (req, res) => {
 //  AI DISCOVER ROUTE
 mountAIDiscover(app, { getAuthHeaders, BASE_URL });
 
-app.get("/healthz", (req, res) => {
+app.get("/health", (req, res) => {
   res.status(200).json({ status: "ok" });
 });
 
