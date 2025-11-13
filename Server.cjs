@@ -232,6 +232,13 @@ app.get("/episodes", async (req, res) => {
 //  AI DISCOVER ROUTE
 mountAIDiscover(app, { getAuthHeaders, BASE_URL });
 
+app.get("/healthz", (req, res) => {
+  res.status(200).json({ status: "ok" });
+});
+
+app.get("/", (req, res) => {
+  res.json({ service: "Pods Backend", status: "online" });
+});
 
 //  404 HANDLER + SERVER START
 
