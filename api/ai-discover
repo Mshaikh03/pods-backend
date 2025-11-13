@@ -1,0 +1,208 @@
+/**
+ * @typedef {import("express").Request} Request
+ * @typedef {import("express").Response} Response
+ */
+
+/**
+ * @typedef {{
+ *   getAuthHeaders: () => Record<string, string>,
+ *   BASE_URL: string
+ * }} DiscoverDeps
+ */
+
+const OpenAI = require("openai");
+const axios = require("axios");
+const { z } = require("zod");
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+const DiscoverResultSchema = z.object({
+  found: z.boolean(),
+  summaryResponse: z.string().optional(),
+  results: z
+    .array(
+      z.object({
+        podcastTitle: z.string().optional(),
+        author: z.string().optional(),
+        summary: z.string().optional(),
+        image: z.string().optional(),
+        feedUrl: z.string().optional(),
+        reasoning: z.string().optional(),
+      })
+    )
+    .optional(),
+});
+
+/**
+ * @param {import("express").Express} app
+ * @param {DiscoverDeps} deps
+ */
+function mountAIDiscover(app, deps) {
+  const { getAuthHeaders, BASE_URL } = deps;
+
+  console.log("AIDiscover initialized");
+
+  /**
+   * @param {Request} req
+   * @param {Response} res
+   */
+  app.post("/api/ai-discover", async (req, res) => {
+    try {
+      const { query } = req.body;
+      if (!query || typeof query !== "string") {
+        return res.status(400).json({ error: "Missing search query" });
+      }
+
+      let searchTerm = query.trim();
+
+      /**
+       * 1. Keyword simplification
+       */
+      try {
+        const keywordResp = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          temperature: 0,
+          messages: [
+            {
+              role: "system",
+              content:
+                "Return the single best keyword for podcast search. JSON only: {\"keyword\": \"...\"}",
+            },
+            { role: "user", content: query },
+          ],
+        });
+
+        const content = keywordResp.choices?.[0]?.message?.content || "{}";
+        const parsed = JSON.parse(content);
+
+        if (parsed.keyword) {
+          searchTerm = parsed.keyword.trim();
+        }
+      } catch (innerErr) {
+        console.warn("Keyword simplification failed:", innerErr);
+      }
+
+      /**
+       * 2. Fetch candidates
+       */
+      const headers = getAuthHeaders();
+      const url = `${BASE_URL}/search/byterm?q=${encodeURIComponent(
+        searchTerm
+      )}&max=20`;
+
+      /** @type {Array<any>} */
+      let feeds = [];
+
+      try {
+        const response = await axios.get(url, {
+          headers,
+          timeout: 9000,
+        });
+        feeds = response.data.feeds || [];
+      } catch (fetchErr) {
+        console.error("PodcastIndex error:", fetchErr);
+      }
+
+      if (!feeds.length) {
+        return res.json({
+          found: false,
+          summaryResponse: `No podcasts found for "${searchTerm}".`,
+        });
+      }
+
+      /**
+       * 3. GPT selection prompt
+       */
+      const selectPrompt = `
+Select the best 5–10 podcasts. Respond with STRICT JSON:
+
+{
+  "found": true,
+  "summaryResponse": "",
+  "results": [
+    {
+      "podcastTitle": "",
+      "author": "",
+      "summary": "",
+      "image": "",
+      "reasoning": ""
+    }
+  ]
+}
+
+User query: "${query}"
+Keyword: "${searchTerm}"
+
+Candidates:
+${JSON.stringify(feeds.slice(0, 20), null, 2).slice(0, 9000)}
+`;
+
+      let parsed;
+
+      try {
+        const completion = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          temperature: 0.2,
+          messages: [
+            { role: "system", content: "Return STRICT JSON only." },
+            { role: "user", content: selectPrompt },
+          ],
+        });
+
+        const raw = completion.choices?.[0]?.message?.content?.trim() || "";
+        parsed = JSON.parse(raw);
+        parsed = DiscoverResultSchema.parse(parsed);
+      } catch (parseErr) {
+        console.warn("Malformed GPT output, using fallback:", parseErr);
+
+        parsed = {
+          found: true,
+          summaryResponse: `Top podcast results for "${searchTerm}".`,
+          results: feeds.slice(0, 8).map((feed) => ({
+            podcastTitle: feed.title,
+            author: feed.author,
+            summary: feed.description || "",
+            image: feed.image || feed.artwork,
+            reasoning: "Pods recommends you check out these podcast.",
+            feedUrl: feed.url || feed.feedUrl || feed.originalUrl || null,
+          })),
+        };
+      }
+
+      /**
+       * 4. Ensure feedUrl is added
+       */
+      parsed.results = parsed.results.map((r) => {
+        const source = feeds.find((f) => {
+          const t = r.podcastTitle?.toLowerCase() || "";
+          const a = r.author?.toLowerCase() || "";
+          return (
+            f.title?.toLowerCase().includes(t) ||
+            f.author?.toLowerCase().includes(a)
+          );
+        });
+
+        return {
+          ...r,
+          feedUrl:
+            r.feedUrl ||
+            source?.url ||
+            source?.feedUrl ||
+            source?.originalUrl ||
+            null,
+        };
+      });
+
+      return res.json(parsed);
+    } catch (err) {
+      console.error("AIDiscover error:", err);
+
+      return res.status(500).json({
+        error: "AI Discover failed",
+        details: err instanceof Error ? err.message : "Unknown error",
+      });
+    }
+  });
+}
+
+module.exports = mountAIDiscover;
