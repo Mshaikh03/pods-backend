@@ -1,15 +1,3 @@
-/**
- * @typedef {import("express").Request} Request
- * @typedef {import("express").Response} Response
- */
-
-/**
- * @typedef {{
- *   getAuthHeaders: () => Record<string, string>,
- *   BASE_URL: string
- * }} DiscoverDeps
- */
-
 const OpenAI = require("openai");
 const axios = require("axios");
 const { z } = require("zod");
@@ -19,33 +7,22 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const DiscoverResultSchema = z.object({
   found: z.boolean(),
   summaryResponse: z.string().optional(),
-  results: z
-    .array(
-      z.object({
-        podcastTitle: z.string().optional(),
-        author: z.string().optional(),
-        summary: z.string().optional(),
-        image: z.string().optional(),
-        feedUrl: z.string().optional(),
-        reasoning: z.string().optional(),
-      })
-    )
-    .optional(),
+  results: z.array(
+    z.object({
+      podcastTitle: z.string(),
+      author: z.string().optional(),
+      summary: z.string().optional(),
+      image: z.string().optional(),
+      feedUrl: z.string().optional(),
+      reasoning: z.string().optional(),
+    })
+  ),
 });
 
-/**
- * @param {import("express").Express} app
- * @param {DiscoverDeps} deps
- */
 function mountAIDiscover(app, deps) {
   const { getAuthHeaders, BASE_URL } = deps;
+  console.log("✓ AIDiscover initialized");
 
-  console.log("AIDiscover initialized");
-
-  /**
-   * @param {Request} req
-   * @param {Response} res
-   */
   app.post("/api/ai-discover", async (req, res) => {
     try {
       const { query } = req.body;
@@ -54,152 +31,173 @@ function mountAIDiscover(app, deps) {
       }
 
       let searchTerm = query.trim();
-
-      /**
-       * 1. Keyword simplification
-       */
       try {
-        const keywordResp = await openai.chat.completions.create({
+        const refine = await openai.chat.completions.create({
           model: "gpt-4o-mini",
           temperature: 0,
           messages: [
             {
               role: "system",
-              content:
-                "Return the single best keyword for podcast search. JSON only: {\"keyword\": \"...\"}",
+              content: `Extract the best podcast search keyword from the user's request.
+Respond **only** with JSON:
+{"keyword": "..."}
+
+Make it a single strong search term (e.g., "investing", "fitness", "AI news").`,
             },
             { role: "user", content: query },
           ],
         });
 
-        const content = keywordResp.choices?.[0]?.message?.content || "{}";
-        const parsed = JSON.parse(content);
-
-        if (parsed.keyword) {
-          searchTerm = parsed.keyword.trim();
-        }
-      } catch (innerErr) {
-        console.warn("Keyword simplification failed:", innerErr);
+        const parsed = JSON.parse(refine.choices[0].message.content);
+        if (parsed.keyword) searchTerm = parsed.keyword.trim();
+      } catch (err) {
+        console.warn("Keyword refinement failed:", err.message);
       }
 
-      /**
-       * 2. Fetch candidates
-       */
       const headers = getAuthHeaders();
-      const url = `${BASE_URL}/search/byterm?q=${encodeURIComponent(
-        searchTerm
-      )}&max=20`;
-
-      /** @type {Array<any>} */
       let feeds = [];
 
       try {
-        const response = await axios.get(url, {
-          headers,
-          timeout: 9000,
-        });
+        const url = `${BASE_URL}/search/byterm?q=${encodeURIComponent(
+          searchTerm
+        )}&max=25`;
+
+        const response = await axios.get(url, { headers, timeout: 9000 });
         feeds = response.data.feeds || [];
-      } catch (fetchErr) {
-        console.error("PodcastIndex error:", fetchErr);
+      } catch (err) {
+        console.error("PodcastIndex fetch error:", err.message);
       }
 
+      /* If PodcastIndex fails, return safe fallback */
       if (!feeds.length) {
         return res.json({
-          found: false,
-          summaryResponse: `No podcasts found for "${searchTerm}".`,
+          found: true,
+          summaryResponse: `Showing closest matches to "${searchTerm}".`,
+          results: [
+            {
+              podcastTitle: "No Results Found",
+              author: "",
+              summary: "",
+              image: "",
+              reasoning: `We couldn't fetch results, but we’re working to improve accuracy.`,
+              feedUrl: null,
+            },
+          ],
         });
       }
 
-      /**
-       * 3. GPT selection prompt
-       */
-      const selectPrompt = `
-Select the best 5–10 podcasts. Respond with STRICT JSON:
+      const limitedFeeds = feeds.slice(0, 20);
+
+      /* 
+       * STEP 3 — AI selection prompt (stronger version)
+      */
+     const prompt = `
+You are ranking podcasts for an AI-powered podcast discovery engine.
+
+User Query: "${query}"
+Core Keyword Interpretation: "${searchTerm}"
+
+Your Role is to perfectly:
+1. Analyze the user's query to understand:
+   - The primary topic they want
+   - Any secondary context (e.g., location, travel, etc)
+   - Whether the user intent is to find: informational, storytelling, news, etc.
+
+2. Perform semantic fallback logic*:
+   - Level 1: Exact or near exact match to topic AND context (e.g., "Podcast about Coffee in Brazil")
+   - Level 2: Topic match but geographically or contextually expanded
+   - Level 3: Broader thematic category (e.g., "coffee", "beverages", "food & culture")
+   - Level 4: Adjacent relevant domain if nothing else exists (e.g., "farming", "agriculture", "supply chain of coffee")
+
+
+3. Select the **best 3–5** TOTAL.
+   - Make the first result the *closest possible match* based on your scaling logic.
+   - The rest should gracefully widen the search radius.
+
+4. For each chosen podcast, write **one short, natural-sounding sentence** explaining WHY it fits the user query.  
+   - Must be meaningful (avoid generic phrases like “related to your search”).
+
+t. Output only **VALID STRICT JSON** following the schema below.
+
+Candidates (list of podcasts):
+${JSON.stringify(limitedFeeds, null, 2).slice(0, 9000)}
+
+Your response MUST be valid JSON that follows this structure:
 
 {
-  "found": true,
-  "summaryResponse": "",
+  "found": true | false,
+  "summaryResponse": "A single-sentence summary of how well we matched the request.",
   "results": [
     {
       "podcastTitle": "",
       "author": "",
       "summary": "",
       "image": "",
+      "feedUrl": "",
       "reasoning": ""
     }
   ]
 }
 
-User query: "${query}"
-Keyword: "${searchTerm}"
-
-Candidates:
-${JSON.stringify(feeds.slice(0, 20), null, 2).slice(0, 9000)}
+Return only STRICT JSON. No commentary. No additional text.
 `;
 
-      let parsed;
+      let parsedResponse;
 
       try {
         const completion = await openai.chat.completions.create({
           model: "gpt-4o-mini",
-          temperature: 0.2,
+          temperature: 0.3,
           messages: [
             { role: "system", content: "Return STRICT JSON only." },
-            { role: "user", content: selectPrompt },
+            { role: "user", content: prompt },
           ],
         });
 
-        const raw = completion.choices?.[0]?.message?.content?.trim() || "";
-        parsed = JSON.parse(raw);
-        parsed = DiscoverResultSchema.parse(parsed);
-      } catch (parseErr) {
-        console.warn("Malformed GPT output, using fallback:", parseErr);
+        const raw = completion.choices[0].message.content.trim();
+        parsedResponse = DiscoverResultSchema.parse(JSON.parse(raw));
+      } catch (err) {
+        console.warn("AI JSON failed — applying fallback.", err.message);
 
-        parsed = {
+        parsedResponse = {
           found: true,
-          summaryResponse: `Top podcast results for "${searchTerm}".`,
-          results: feeds.slice(0, 8).map((feed) => ({
-            podcastTitle: feed.title,
-            author: feed.author,
-            summary: feed.description || "",
-            image: feed.image || feed.artwork,
-            reasoning: "Pods recommends you check out these podcast.",
-            feedUrl: feed.url || feed.feedUrl || feed.originalUrl || null,
+          summaryResponse: `Top podcast picks for "${searchTerm}".`,
+          results: limitedFeeds.slice(0, 8).map((f) => ({
+            podcastTitle: f.title || "Unknown",
+            author: f.author || "",
+            summary: f.description || "",
+            image: f.image || f.artwork || "",
+            reasoning: `A closely related match based on your search.`,
+            feedUrl: f.url || f.feedUrl || f.originalUrl || null,
           })),
         };
       }
 
-      /**
-       * 4. Ensure feedUrl is added
-       */
-      parsed.results = parsed.results.map((r) => {
-        const source = feeds.find((f) => {
-          const t = r.podcastTitle?.toLowerCase() || "";
-          const a = r.author?.toLowerCase() || "";
-          return (
-            f.title?.toLowerCase().includes(t) ||
-            f.author?.toLowerCase().includes(a)
-          );
-        });
+
+      parsedResponse.results = parsedResponse.results.map((r) => {
+        const match = limitedFeeds.find((f) =>
+          (f.title || "").toLowerCase().includes(
+            (r.podcastTitle || "").toLowerCase()
+          )
+        );
 
         return {
           ...r,
           feedUrl:
             r.feedUrl ||
-            source?.url ||
-            source?.feedUrl ||
-            source?.originalUrl ||
+            match?.url ||
+            match?.feedUrl ||
+            match?.originalUrl ||
             null,
         };
       });
 
-      return res.json(parsed);
+      return res.json(parsedResponse);
     } catch (err) {
-      console.error("AIDiscover error:", err);
-
+      console.error("AIDiscover fatal error:", err.message);
       return res.status(500).json({
         error: "AI Discover failed",
-        details: err instanceof Error ? err.message : "Unknown error",
+        details: err.message,
       });
     }
   });

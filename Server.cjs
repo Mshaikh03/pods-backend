@@ -38,38 +38,40 @@ app.use(
 app.use(compression());
 app.use(express.json({ limit: "10mb" }));
 
-// CORS
+const cors = require("cors");
+
 const allowedOrigins = [
   "https://pods-frontend.pages.dev",
   "https://www.podstudio.ca",
   "https://podstudio.ca",
   "http://localhost:5173",
-  "http://127.0.0.1:5173"
+  "http://127.0.0.1:5173",
+  "http://10.0.0.87:8080",
+  "http://localhost:8080",
+  "http://172.20.10.2:8080", 
+  "http://10.17.160.138:8080"
 ];
 
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
+// CORS middleware
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (
+        allowedOrigins.includes(origin) ||
+        origin.endsWith(".pods-frontend.pages.dev")
+      ) {
+        return callback(null, true);
+      }
+      console.log("CORS BLOCKED:", origin);
+      return callback(new Error("Not allowed by CORS"));
+    },
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "Range"],
+    credentials: true,
+  })
+);
 
-  if (
-    allowedOrigins.includes(origin) ||
-    (origin && origin.endsWith(".pods-frontend.pages.dev"))
-  ) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-  }
-
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Content-Type,Authorization,Range"
-  );
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-
-  if (req.method === "OPTIONS") {
-    return res.sendStatus(204);
-  }
-
-  next();
-});
 //  CACHE + AUTH HELPERS
 
 const cache = new NodeCache({ stdTTL: 90, checkperiod: 120 });
@@ -155,6 +157,28 @@ app.get(
     return data;
   })
 );
+
+// CATEGORY ROUTES (required for frontend)
+function buildCategoryRoute(path, key, term) {
+  app.get(
+    path,
+    cachedRoute(() => key, async () => {
+      console.log(`→ Fetching category: ${key}`);
+      const headers = getAuthHeaders();
+      const url = `${BASE_URL}/search/byterm?q=${encodeURIComponent(term)}&max=30`;
+
+      const { data } = await axios.get(url, { headers });
+      console.log(`✓ ${key} fetched (${data.feeds?.length || 0})`);
+      return data;
+    })
+  );
+}
+
+buildCategoryRoute("/sports", "sports", "sports");
+buildCategoryRoute("/news", "news", "news");
+buildCategoryRoute("/truecrime", "truecrime", "true crime");
+buildCategoryRoute("/technology", "technology", "technology");
+buildCategoryRoute("/lifestyle", "lifestyle", "lifestyle");
 
 app.get(
   "/search/:term",
