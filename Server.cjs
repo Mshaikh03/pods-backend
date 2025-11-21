@@ -49,7 +49,8 @@ const allowedOrigins = [
   "http://10.0.0.87:8080",
   "http://localhost:8080",
   "http://172.20.10.2:8080", 
-  "http://10.17.160.138:8080"
+  "http://10.17.160.138:8080",
+  "http://10.17.145.246:8080",
 ];
 
 // CORS middleware
